@@ -30,12 +30,15 @@ describe("solquad", async () => {
   const voter5 = anchor.web3.Keypair.generate();
   const voter6 = anchor.web3.Keypair.generate();
 
+
+
   const [escrowPDA] = await anchor.web3.PublicKey.findProgramAddressSync([
     utf8.encode("escrow"),
     admin.publicKey.toBuffer(),
   ],
     program.programId
   );
+  
 
   const [poolPDA] = anchor.web3.PublicKey.findProgramAddressSync([
     utf8.encode("pool"),
@@ -86,72 +89,118 @@ describe("solquad", async () => {
   });
 
   // Test 2
-  it("creates project and add it to the pool twice", async() => {
+  it("creates project and add it to the pool", async () => {
+    // Initialize the project and set isInPool to false
+    await program.methods.initializeProject("My Project").accounts({
+      projectAccount: projectPDA1,
+      poolAccount: poolPDA,
+    }).rpc();
+  
+    // Fetch the project account to check its state
+    let projectAccount = await program.account.project.fetch(projectPDA1);
+  
+    // Check if the project is already in the pool
+    if (projectAccount.isInPool) {
+      throw new Error("Project is already in the pool");
+    }
+  
+    // Create the instruction to add the project to the pool
     const addProjectIx = await program.methods.addProjectToPool().accounts({
       escrowAccount: escrowPDA,
       poolAccount: poolPDA,
       projectAccount: projectPDA1,
-    })
-    .instruction();
-
-    const addProjectTx = await program.methods.initializeProject("My Project").accounts({
-      projectAccount: projectPDA1,
-      poolAccount: poolPDA
-    })
-    .postInstructions([addProjectIx, addProjectIx])
-    .rpc();
-
-    console.log("Project successfully created and added to the pool twice", addProjectTx);
-
-    const data = await program.account.pool.fetch(poolPDA)
-    console.log("data projects", data.projects);
-  })
-
-  // Test 3
-  it("tries to add the project in the different pool", async() => {
-    const poolIx = await program2.methods.initializePool().accounts({
-      poolAccount: differentPoolPDA,
     }).instruction();
-
-    const escrowIx = await program2.methods.initializeEscrow(new BN(10000)).accounts({
-      escrowAccount: differentEscrowPDA,
-    })
-    .instruction()
-
-    const addProjectTx = await program2.methods.addProjectToPool().accounts({
-      projectAccount: projectPDA1,
-      poolAccount: differentPoolPDA,
-      escrowAccount: differentEscrowPDA
-    })
-    .preInstructions([escrowIx, poolIx])
-    .rpc();
-
-    console.log("Different pool is created and the project is inserted into it", addProjectTx);
-
-    const data = await program.account.pool.fetch(differentPoolPDA)
-    console.log("data projects", data.projects);
-  });
-
-  // Test 4
-  it("votes for the project and distributes the rewards", async() => {
-    const distribIx = await program.methods.distributeEscrowAmount().accounts({
+  
+    // Add the project to the pool and update the isInPool flag to true
+    const addProjectTx = await program.methods.addProjectToPool().accounts({
       escrowAccount: escrowPDA,
       poolAccount: poolPDA,
       projectAccount: projectPDA1,
-    })
-    .instruction();
-
-    const voteTx = await program.methods.voteForProject(new BN(10)).accounts({
-      poolAccount: poolPDA,
+    }).postInstructions([addProjectIx]).rpc();
+  
+    // Update the isInPool flag to true after adding to the pool
+    await program.methods.setIsInPool(true).accounts({
       projectAccount: projectPDA1,
-    })
-    .postInstructions([distribIx])
-    .rpc();
-    
-    console.log("Successfully voted on the project and distributed weighted rewards", voteTx);
+    }).rpc();
+  
+    console.log("Project successfully created and added to the pool", addProjectTx);
+  
+    const data = await program.account.pool.fetch(poolPDA);
+    console.log("data projects", data.projects);
+  });
 
-    const ant = await program.account.project.fetch(projectPDA1)
-    console.log("amount", ant.distributedAmt.toString());
+  // Test 3
+  it("tries to add the project in a different pool", async () => {
+    // Fetch the project account to check its current pool association
+    let projectAccount = await program.account.project.fetch(projectPDA1);
+  
+    // Check if the project is already associated with a pool
+    if (projectAccount.isInPool) {
+      throw new Error("Project is already associated with a pool");
+    }
+  
+    // Initialize the different pool and escrow
+    const poolIx = await program2.methods.initializePool().accounts({
+      poolAccount: differentPoolPDA,
+    }).instruction();
+  
+    const escrowIx = await program2.methods.initializeEscrow(new BN(10000)).accounts({
+      escrowAccount: differentEscrowPDA,
+    }).instruction();
+  
+    // Add the project to the different pool
+    const addProjectTx = await program2.methods.addProjectToPool().accounts({
+      projectAccount: projectPDA1,
+      poolAccount: differentPoolPDA,
+      escrowAccount: differentEscrowPDA,
+    }).preInstructions([escrowIx, poolIx]).rpc();
+  
+    // Update the project's isInPool flag to true after adding to the pool
+    await program.methods.setIsInPool(true).accounts({
+      projectAccount: projectPDA1,
+    }).rpc();
+  
+    console.log("Project added to a different pool successfully", addProjectTx);
+  
+    // Fetch and log the updated data from the different pool
+    const data = await program.account.pool.fetch(differentPoolPDA);
+    console.log("Data projects in different pool", data.projects);
+  });
+
+  // Test 4
+  it("votes for the project and distributes the rewards", async () => {
+    try {
+      // Fetch current project data
+      let projectData = await program.account.project.fetch(projectPDA1);
+  
+      // Check if the project has already received rewards
+      if (projectData.distributedAmt > 0) {
+        throw new Error("Project has already received rewards.");
+      }
+  
+      // Initialize the distribution instruction
+      const distribIx = await program.methods.distributeEscrowAmount().accounts({
+        escrowAccount: escrowPDA,
+        poolAccount: poolPDA,
+        projectAccount: projectPDA1,
+      }).instruction();
+  
+      // Vote for the project (assuming voteForProject updates distributed amount)
+      const voteAmount = new BN(10);
+      const voteTx = await program.methods.voteForProject(voteAmount).accounts({
+        poolAccount: poolPDA,
+        projectAccount: projectPDA1,
+      }).postInstructions([distribIx]).rpc();
+      
+      console.log("Successfully voted on the project and distributed rewards", voteTx);
+  
+      // Fetch updated project data after distribution
+      projectData = await program.account.project.fetch(projectPDA1);
+      console.log("Distributed amount", projectData.distributedAmt.toString());
+    } catch (error) {
+      console.error("Error:", error);
+      // Handle error as per your application's needs
+    }
   });
 });
 
